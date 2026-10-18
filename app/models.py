@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 
 class SubmitTaskRequest(BaseModel):
     submitted_by: int
@@ -21,3 +21,22 @@ class SignupRequest(BaseModel):
     username: str
     email: str
     password: str
+
+class CreateTeamRequest(BaseModel):
+    team_name: str = Field(min_length=1, max_length=100)
+
+
+class CreateUserRequest(BaseModel):
+    userid: str = Field(min_length=1, max_length=50)
+    email: EmailStr
+    temporary_password: str = Field(min_length=12)
+    role: str = "USER"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=12)
+
+class AssignTaskRequest(BaseModel):
+    task_id: int
+    team_id: int
