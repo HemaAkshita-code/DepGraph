@@ -1,4 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
+from typing import Literal
 
 class SubmitTaskRequest(BaseModel):
     submitted_by: int
@@ -9,8 +10,7 @@ class SubmitTaskRequest(BaseModel):
 class CreateTaskRequest(BaseModel):
     project_id: int
     vuln_id: int
-    created_by: int
-    policy_id: int
+    priority: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"]
     priority_reason: str
 
 class LoginRequest(BaseModel):

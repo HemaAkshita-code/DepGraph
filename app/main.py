@@ -1,16 +1,21 @@
 
+import json
 import os
 
 from fastapi import FastAPI, HTTPException, Request
 from app import database
 from pydantic import BaseModel
-from app.models import CreateTaskRequest
+from app.models import AssignTaskRequest, CreateTaskRequest
 from app.models import SubmitTaskRequest
 from app.models import LoginRequest
 from app.models import SignupRequest
 from app.models import CreateTeamRequest
-from fastapi.middleware.sessions import SessionMiddleware
+from app.models import CreateUserRequest
+from app.models import ChangePasswordRequest
+from starlette.middleware.sessions import SessionMiddleware
 from pwdlib import PasswordHash
+import json
+import oracledb
 
 app = FastAPI()
 
@@ -196,7 +201,7 @@ def add_team(data: CreateTeamRequest, request: Request):
             }
         )
 
-        team_id = new_team_id.getvalue()
+        team_id = new_team_id.getvalue()[0]
         connection.commit()
 
         return {
@@ -212,23 +217,137 @@ def add_team(data: CreateTeamRequest, request: Request):
         cursor.close()
         connection.close()
 
+
+
+
+@app.post("/add_task", status_code=201)
+def add_task(data: CreateTaskRequest, request: Request):
+    admin = require_admin(request)
+    connection = database.get_connection()
+    cursor = None
+
+    try:
+        cursor = connection.cursor()
+
+        # 1. Find the active remediation policy for this priority.
+        cursor.execute("""
+            SELECT policy_id, deadline_hours
+            FROM remediation_policies
+            WHERE priority = :priority
+              AND is_active = 'Y'
+        """, {"priority": data.priority})
+
+        policy = cursor.fetchone()
+
+        if policy is None:
+            raise HTTPException(
+                status_code=409,
+                detail="No active remediation policy exists for this priority"
+            )
+
+        policy_id, deadline_hours = policy
+
+        # 2. Create the remediation task.
+        new_id = cursor.var(int)
+
+        cursor.execute("""
+            INSERT INTO fix_tasks (
+                project_id, vuln_id, created_by, policy_id,
+                priority_reason, status, due_at
+            )
+            VALUES (
+                :project_id, :vuln_id, :created_by, :policy_id,
+                :priority_reason, 'OPEN',
+                SYSTIMESTAMP + NUMTODSINTERVAL(:hours, 'HOUR')
+            )
+            RETURNING task_id INTO :new_id
+        """, {
+            "project_id": data.project_id,
+            "vuln_id": data.vuln_id,
+            "created_by": admin["userid"],
+            "policy_id": policy_id,
+            "priority_reason": data.priority_reason,
+            "hours": deadline_hours,
+            "new_id": new_id
+        })
+
+        task_id = new_id.getvalue()[0]
+
+        # 3. Record the task creation in the audit history.
+        cursor.execute("""
+            INSERT INTO history_log (
+                task_id, actor_user_id, action,
+                old_values, new_values, created_at
+            )
+            VALUES (
+                :task_id, :actor_user_id, 'TASK_CREATED',
+                NULL, :new_values, SYSTIMESTAMP
+            )
+        """, {
+            "task_id": task_id,
+            "actor_user_id": admin["userid"],
+            "new_values": json.dumps({
+                "project_id": data.project_id,
+                "vuln_id": data.vuln_id,
+                "priority": data.priority,
+                "policy_id": policy_id,
+                "deadline_hours": deadline_hours,
+                "priority_reason": data.priority_reason
+            })
+        })
+
+        # 4. Save both the task and its history together.
+        connection.commit()
+
+        return {
+            "message": "Remediation task created successfully",
+            "task_id": task_id
+        }
+
+    except oracledb.IntegrityError as exc:
+        connection.rollback()
+
+        error = exc.args[0]
+
+        # ORA-02291: a referenced project or vulnerability does not exist.
+        if error.code == 2291:
+            raise HTTPException(
+                status_code=404,
+                detail="Project or vulnerability not found"
+            ) from exc
+
+        # Let other database integrity errors propagate for now.
+        raise
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        connection.close()
+
+
+
 @app.post("/assign_task")
 def assign_task(data: AssignTaskRequest, request: Request):
     admin = require_admin(request)
 
     connection = database.get_connection()
-    cursor = connection.cursor()
+    cursor = None
 
     try:
-        cursor.execute(
-            """
+        cursor = connection.cursor()
+
+        # 1. Find the task and lock its row while we update it.
+        cursor.execute("""
             SELECT status, team_id
             FROM fix_tasks
             WHERE task_id = :task_id
             FOR UPDATE
-            """,
-            {"task_id": data.task_id}
-        )
+        """, {"task_id": data.task_id})
 
         task = cursor.fetchone()
 
@@ -240,16 +359,15 @@ def assign_task(data: AssignTaskRequest, request: Request):
 
         old_status, old_team_id = task
 
-        if old_status != "OPEN":
-            raise HTTPException(
-                status_code=409,
-                detail="Only OPEN tasks can be assigned"
-            )
+        # 2. Check whether this status change is allowed.
+        validate_transition(old_status, "IN_PROGRESS")
 
-        cursor.execute(
-            "SELECT 1 FROM teams WHERE team_id = :team_id",
-            {"team_id": data.team_id}
-        )
+        # 3. Verify that the target team exists.
+        cursor.execute("""
+            SELECT 1
+            FROM teams
+            WHERE team_id = :team_id
+        """, {"team_id": data.team_id})
 
         if cursor.fetchone() is None:
             raise HTTPException(
@@ -257,22 +375,20 @@ def assign_task(data: AssignTaskRequest, request: Request):
                 detail="Team not found"
             )
 
-        cursor.execute(
-            """
+        # 4. Assign the task to the team and start the work.
+        cursor.execute("""
             UPDATE fix_tasks
             SET team_id = :team_id,
                 status = 'IN_PROGRESS',
                 updated_at = SYSTIMESTAMP
             WHERE task_id = :task_id
-            """,
-            {
-                "team_id": data.team_id,
-                "task_id": data.task_id
-            }
-        )
+        """, {
+            "team_id": data.team_id,
+            "task_id": data.task_id
+        })
 
-        cursor.execute(
-            """
+        # 5. Record the change in the audit history.
+        cursor.execute("""
             INSERT INTO history_log (
                 task_id, actor_user_id, action,
                 old_values, new_values, created_at
@@ -281,36 +397,46 @@ def assign_task(data: AssignTaskRequest, request: Request):
                 :task_id, :actor_user_id, 'TEAM_ASSIGNED',
                 :old_values, :new_values, SYSTIMESTAMP
             )
-            """,
-            {
-                "task_id": data.task_id,
-                "actor_user_id": admin["userid"],
-                "old_values": (
-                    f"team_id={old_team_id}, status={old_status}"
-                ),
-                "new_values": (
-                    f"team_id={data.team_id}, status=IN_PROGRESS"
-                )
-            }
-        )
+        """, {
+            "task_id": data.task_id,
+            "actor_user_id": admin["userid"],
+            "old_values": json.dumps({
+                "team_id": old_team_id,
+                "status": old_status
+            }),
+            "new_values": json.dumps({
+                "team_id": data.team_id,
+                "status": "IN_PROGRESS"
+            })
+        })
 
+        # 6. Save the task update and audit record together.
         connection.commit()
 
-        return {"message": "Task assigned successfully"}
+        return {
+            "message": "Task assigned successfully",
+            "task_id": data.task_id,
+            "team_id": data.team_id,
+            "status": "IN_PROGRESS"
+        }
 
     except Exception:
         connection.rollback()
         raise
 
     finally:
-        cursor.close()
+        if cursor is not None:
+            cursor.close()
+
         connection.close()
 
+
 @app.get("/view_teams")
-def view_teams():
+def view_teams(request: Request):
+    admin = require_admin(request)
     connection = database.get_connection()
     cursor = connection.cursor()
-
+    
     try:
         cursor.execute(
             "SELECT team_id, team_name FROM teams ORDER BY team_name"
@@ -329,52 +455,9 @@ def view_teams():
         cursor.close()
         connection.close()
 
-@app.post("/add_team", status_code=201)
-def add_team(data: CreateTeamRequest):
-    team_name = data.team_name.strip()
-
-    if not team_name:
-        raise HTTPException(
-            status_code=400,
-            detail="Team name cannot be empty"
-        )
-
-    connection = database.get_connection()
-    cursor = connection.cursor()
-
-    try:
-        cursor.execute(
-            """
-            INSERT INTO teams (team_name)
-            VALUES (:team_name)
-            RETURNING team_id INTO :new_team_id
-            """,
-            {
-                "team_name": team_name,
-                "new_team_id": cursor.var(int)
-            }
-        )
-
-        team_id = cursor.bindvars["new_team_id"].getvalue()
-
-        connection.commit()
-
-        return {
-            "message": "Team added successfully",
-            "team_id": team_id,
-            "team_name": team_name
-        }
-
-    except Exception:
-        connection.rollback()
-        raise
-
-    finally:
-        cursor.close()
-        connection.close()
-
 @app.get("/view_team_members/{team_id}")
-def view_team_members(team_id: int):
+def view_team_members(team_id: int, request: Request):
+    admin = require_admin(request)
     connection = database.get_connection()
     cursor = connection.cursor()
 
@@ -414,52 +497,128 @@ def view_team_members(team_id: int):
         cursor.close()
         connection.close()
 
+
 @app.post("/add_team_member/{team_id}/{user_id}/{membership_role}")
 def add_team_member(
     team_id: int,
     user_id: int,
-    membership_role: str
+    membership_role: str,
+    request: Request
 ):
+    # Only Admins can add team members for now.
+    require_admin(request)
+
+    # Validate the membership role, not the user's account role.
     membership_role = membership_role.upper()
 
-    if membership_role not in {
-        "TEAM_LEAD", "CONTRIBUTOR", "REVIEWER"
-    }:
+    allowed_membership_roles = {
+        "TEAM_LEAD",
+        "CONTRIBUTOR",
+        "REVIEWER"
+    }
+
+    if membership_role not in allowed_membership_roles:
         raise HTTPException(
             status_code=400,
             detail="Invalid membership role"
         )
 
     connection = database.get_connection()
-    cursor = connection.cursor()
+    cursor = None
 
     try:
-        cursor.execute(
-            """
+        cursor = connection.cursor()
+
+        # Verify that the team exists.
+        cursor.execute("""
+            SELECT 1
+            FROM teams
+            WHERE team_id = :team_id
+        """, {"team_id": team_id})
+
+        if cursor.fetchone() is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Team not found"
+            )
+
+        # Verify that the user exists and is active.
+        cursor.execute("""
+            SELECT 1
+            FROM users
+            WHERE userid = :user_id
+              AND is_active = 'Y'
+        """, {"user_id": user_id})
+
+        if cursor.fetchone() is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Active user not found"
+            )
+
+        # Add the user to the team.
+        cursor.execute("""
             INSERT INTO team_members (
-                team_id, user_id, membership_role, joined_at
+                team_id,
+                user_id,
+                membership_role,
+                joined_at
             )
             VALUES (
-                :team_id, :user_id, :membership_role, SYSDATE
+                :team_id,
+                :user_id,
+                :membership_role,
+                SYSDATE
             )
-            """,
-            {
-                "team_id": team_id,
-                "user_id": user_id,
-                "membership_role": membership_role
-            }
-        )
+        """, {
+            "team_id": team_id,
+            "user_id": user_id,
+            "membership_role": membership_role
+        })
 
         connection.commit()
-        return {"message": "Team member added successfully"}
+
+        return {
+            "message": "Team member added successfully",
+            "team_id": team_id,
+            "user_id": user_id,
+            "membership_role": membership_role
+        }
+
+    except HTTPException:
+        connection.rollback()
+        raise
+
+    except oracledb.IntegrityError as exc:
+        connection.rollback()
+        error = exc.args[0]
+
+        # ORA-00001: a unique constraint was violated.
+        if error.code == 1:
+            raise HTTPException(
+                status_code=409,
+                detail="This user may already belong to the team"
+            ) from exc
+
+        # ORA-02291: a referenced parent record does not exist.
+        if error.code == 2291:
+            raise HTTPException(
+                status_code=404,
+                detail="Team or user not found"
+            ) from exc
+
+        raise
 
     except Exception:
         connection.rollback()
         raise
 
     finally:
-        cursor.close()
+        if cursor is not None:
+            cursor.close()
+
         connection.close()
+
 
 @app.get("/view_tasks")
 def view_tasks(request: Request):
@@ -567,9 +726,10 @@ def view_pending_tasks(request: Request):
 
 @app.get("/view_open_tasks")
 def view_open_tasks(request: Request):
+    admin = require_admin(request)
     connection = database.get_connection()
     cursor = connection.cursor()
-    admin = require_admin(request)
+    
 
     try:
         cursor.execute(
@@ -601,15 +761,16 @@ def view_open_tasks(request: Request):
 
 @app.get("/view_task_by_id/{task_id}")
 def view_task_by_id(task_id: int, request: Request):
+    user = get_current_user(request)
     connection = database.get_connection()
     cursor = connection.cursor()
-    user = get_current_user(request)
-    try:
 
+    try:
         if user["role"] != "ADMIN":
             cursor.execute(
                 """
-                SELECT *
+                SELECT task_id, project_id, vuln_id, team_id,
+                       assigned_to, status, due_at
                 FROM fix_tasks ft
                 WHERE ft.task_id = :task_id
                   AND EXISTS (
@@ -622,15 +783,14 @@ def view_task_by_id(task_id: int, request: Request):
                 {"task_id": task_id, "userid": user["userid"]}
             )
         else:
-            cursor.execute("""SELECT *
-                            FROM fix_tasks ft
-                            WHERE ft.task_id = :task_id""",
-                           {"task_id": task_id})
-
-        if cursor.fetchone() is None:
-            raise HTTPException(
-                status_code=403,
-                detail="You do not have access to this task"
+            cursor.execute(
+                """
+                SELECT task_id, project_id, vuln_id, team_id,
+                       assigned_to, status, due_at
+                FROM fix_tasks
+                WHERE task_id = :task_id
+                """,
+                {"task_id": task_id}
             )
 
         row = cursor.fetchone()
@@ -638,7 +798,7 @@ def view_task_by_id(task_id: int, request: Request):
         if row is None:
             raise HTTPException(
                 status_code=404,
-                detail="Task not found"
+                detail="Task not found or you do not have access to it"
             )
 
         columns = [
@@ -651,6 +811,8 @@ def view_task_by_id(task_id: int, request: Request):
     finally:
         cursor.close()
         connection.close()
+
+    
 
 #user_id in session, so I can verify authorisation
 
@@ -747,41 +909,49 @@ def submit_task(task_id: int, data: SubmitTaskRequest):
 
 
 @app.post("/login")
-def login(data: LoginRequest):
+def login(data: LoginRequest, request: Request):
     connection = database.get_connection()
     cursor = connection.cursor()
 
     try:
         cursor.execute(
             """
-            SELECT password
+            SELECT password, role, is_active
             FROM users
             WHERE userid = :userid
             """,
             {"userid": data.userid}
         )
 
-        result = cursor.fetchone()
+        user = cursor.fetchone()
 
-        if result is None:
+        if (
+            user is None
+            or user[2] != "Y"
+            or not password_hash.verify(data.password, user[0])
+        ):
             raise HTTPException(
                 status_code=401,
                 detail="Invalid user ID or password"
             )
 
-        stored_hash = result[0]
+        # Start a fresh session after successful authentication.
+        request.session.clear()
+        request.session["userid"] = data.userid
 
-        if not password_hash.verify(data.password, stored_hash):
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid user ID or password"
-            )
-
-        return {"message": "Login successful"}
+        return {
+            "message": "Login successful",
+            "role": user[1]
+        }
 
     finally:
         cursor.close()
         connection.close()
+
+@app.post("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return {"message": "Logged out successfully"}
     
 
 @app.post("/signup")
