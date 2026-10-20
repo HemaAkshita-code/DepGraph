@@ -3,15 +3,10 @@ import json
 import os
 
 from fastapi import FastAPI, HTTPException, Request
-from app import database
+from . import database
 from pydantic import BaseModel
-from app.models import AssignTaskRequest, CreateTaskRequest
-from app.models import SubmitTaskRequest
-from app.models import LoginRequest
-from app.models import SignupRequest
-from app.models import CreateTeamRequest
-from app.models import CreateUserRequest
-from app.models import ChangePasswordRequest
+from .models import AssignTaskRequest, CreateTaskRequest, SubmitTaskRequest, LoginRequest, SignupRequest, CreateTeamRequest
+from .models import CreateUserRequest, ChangePasswordRequest
 from starlette.middleware.sessions import SessionMiddleware
 from pwdlib import PasswordHash
 import json
