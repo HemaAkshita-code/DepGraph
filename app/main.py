@@ -15,12 +15,18 @@ import oracledb
 
 app = FastAPI()
 
-@app.get("/remediation-plan")
+@app.post("/remediation-plan")
 def get_remediation_plan( data: GetRemediationPlanRequest, request: Request):
-    userid = request.session.get("userid")
-    agent.vulnerability_summary(data.task_id, request)
-    agent.analyse_vulnerabilty_impacts(data.task_id, request)
-    agent.remediation_plan(data.task_id, request)
+    user = services.get_current_user(request)
+    vulnerability_summary = agent.vulnerability_summary(data.task_id, request)
+    impact_analysis = agent.analyse_vulnerabilty_impacts(data.task_id, request)
+    remediation_plan = agent.remediation_plan(data.task_id, request)
+    return {
+        "message": "Remediation plan generated successfully",
+        "vulnerability_summary": vulnerability_summary,
+        "impact_analysis": impact_analysis,
+        "remediation_plan": remediation_plan
+    }
 
 
 

@@ -1,6 +1,6 @@
 import os
 from urllib import response
-
+from .services import get_current_user
 from dotenv import load_dotenv
 from fastapi import Request
 from .prompts import vulnerability_summary, impact_analysis, remediation_plan  
@@ -30,8 +30,7 @@ def generate_vulnerabilty_summary(task_id, request: Request):
                 "role": "user",
                 "content": context_prompt 
             }
-        ],
-        text_format=StudentContext
+        ]
     )
 
     return response.output_parsed
@@ -54,8 +53,7 @@ def generate_remediation_plan(task_id, request: Request):
                 "role": "user",
                 "content": context_prompt
             }
-        ],
-        text_format=StudentContext
+        ]
     )
 
     return response.output_parsed
@@ -79,8 +77,7 @@ def analyse_vulnerabilty_impacts(task_id, request :Request):
                 "role": "user",
                 "content": context_prompt
             }
-        ],
-        text_format=StudentContext
+        ]
     )
 
      return response.output_parsed
