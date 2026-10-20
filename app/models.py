@@ -40,3 +40,6 @@ class ChangePasswordRequest(BaseModel):
 class AssignTaskRequest(BaseModel):
     task_id: int
     team_id: int
+
+class GetRemediationPlanRequest(BaseModel):
+    task_id: int

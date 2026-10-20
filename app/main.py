@@ -6,7 +6,8 @@ from fastapi import FastAPI, HTTPException, Request
 from . import database
 from pydantic import BaseModel
 from .models import AssignTaskRequest, CreateTaskRequest, SubmitTaskRequest, LoginRequest, SignupRequest, CreateTeamRequest
-from .models import CreateUserRequest, ChangePasswordRequest
+from .models import CreateUserRequest, ChangePasswordRequest, GetRemediationPlanRequest
+from . import agent, services
 from starlette.middleware.sessions import SessionMiddleware
 from pwdlib import PasswordHash
 import json
@@ -14,64 +15,21 @@ import oracledb
 
 app = FastAPI()
 
-def get_current_user(request: Request):
+@app.get("/remediation-plan")
+def get_remediation_plan( data: GetRemediationPlanRequest, request: Request):
     userid = request.session.get("userid")
-
-    if userid is None:
-        raise HTTPException(
-            status_code=401,
-            detail="Please log in first"
-        )
-
-    connection = database.get_connection()
-    cursor = connection.cursor()
-
-    try:
-        cursor.execute(
-            """
-            SELECT userid, role, is_active
-            FROM users
-            WHERE userid = :userid
-            """,
-            {"userid": userid}
-        )
-
-        user = cursor.fetchone()
-
-        if user is None or user[2] != "Y":
-            request.session.clear()
-            raise HTTPException(
-                status_code=401,
-                detail="Account is inactive or no longer exists"
-            )
-
-        return {
-            "userid": user[0],
-            "role": user[1]
-        }
-
-    finally:
-        cursor.close()
-        connection.close()
+    agent.vulnerability_summary(data.task_id, request)
+    agent.analyse_vulnerabilty_impacts(data.task_id, request)
+    agent.remediation_plan(data.task_id, request)
 
 
-def require_admin(request: Request):
-    user = get_current_user(request)
-
-    if user["role"] != "ADMIN":
-        raise HTTPException(
-            status_code=403,
-            detail="Admin permission required"
-        )
-
-    return user
 
 @app.post("/admin/users", status_code=201)
 def create_user(
     data: CreateUserRequest,
     request: Request
 ):
-    admin = require_admin(request)
+    admin = services.require_admin(request)
 
     role = data.role.upper()
 
@@ -168,7 +126,7 @@ def home():
 
 @app.post("/add_team", status_code=201)
 def add_team(data: CreateTeamRequest, request: Request):
-    require_admin(request)
+    services.require_admin(request)
 
     team_name = data.team_name.strip()
 
@@ -217,7 +175,7 @@ def add_team(data: CreateTeamRequest, request: Request):
 
 @app.post("/add_task", status_code=201)
 def add_task(data: CreateTaskRequest, request: Request):
-    admin = require_admin(request)
+    admin = services.require_admin(request)
     connection = database.get_connection()
     cursor = None
 
@@ -328,7 +286,7 @@ def add_task(data: CreateTaskRequest, request: Request):
 
 @app.post("/assign_task")
 def assign_task(data: AssignTaskRequest, request: Request):
-    admin = require_admin(request)
+    admin = services.require_admin(request)
 
     connection = database.get_connection()
     cursor = None
@@ -428,7 +386,7 @@ def assign_task(data: AssignTaskRequest, request: Request):
 
 @app.get("/view_teams")
 def view_teams(request: Request):
-    admin = require_admin(request)
+    admin = services.require_admin(request)
     connection = database.get_connection()
     cursor = connection.cursor()
     
@@ -452,7 +410,7 @@ def view_teams(request: Request):
 
 @app.get("/view_team_members/{team_id}")
 def view_team_members(team_id: int, request: Request):
-    admin = require_admin(request)
+    admin = services.require_admin(request)
     connection = database.get_connection()
     cursor = connection.cursor()
 
@@ -501,7 +459,7 @@ def add_team_member(
     request: Request
 ):
     # Only Admins can add team members for now.
-    require_admin(request)
+    services.require_admin(request)
 
     # Validate the membership role, not the user's account role.
     membership_role = membership_role.upper()
@@ -617,7 +575,7 @@ def add_team_member(
 
 @app.get("/view_tasks")
 def view_tasks(request: Request):
-    user = get_current_user(request)
+    user = services.get_current_user(request)
 
     connection = database.get_connection()
     cursor = connection.cursor()
@@ -669,7 +627,7 @@ def view_tasks(request: Request):
 
 @app.get("/view_pending_tasks")
 def view_pending_tasks(request: Request):
-    user = get_current_user(request)
+    user = services.get_current_user(request)
 
     connection = database.get_connection()
     cursor = connection.cursor()
@@ -721,7 +679,7 @@ def view_pending_tasks(request: Request):
 
 @app.get("/view_open_tasks")
 def view_open_tasks(request: Request):
-    admin = require_admin(request)
+    admin = services.require_admin(request)
     connection = database.get_connection()
     cursor = connection.cursor()
     
@@ -756,7 +714,7 @@ def view_open_tasks(request: Request):
 
 @app.get("/view_task_by_id/{task_id}")
 def view_task_by_id(task_id: int, request: Request):
-    user = get_current_user(request)
+    user = services.get_current_user(request)
     connection = database.get_connection()
     cursor = connection.cursor()
 
