@@ -15,6 +15,14 @@ import oracledb
 
 app = FastAPI()
 
+@app.post("/submit_task")
+def submit_task(data: SubmitTaskRequest, request: Request):
+    return services.submit_task(data, request)
+
+@app.get("/submitted_tasks/{task_id}")
+def get_submitted_tasks(task_id: str, request: Request):
+    return services.get_submitted_tasks(task_id, request)
+
 @app.post("/remediation-plan")
 def get_remediation_plan( data: GetRemediationPlanRequest, request: Request):
     user = services.get_current_user(request)

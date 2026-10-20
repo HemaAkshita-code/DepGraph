@@ -56,7 +56,7 @@ def submit_task(request : Request, data: SubmitTaskRequest):
         cursor.close()
         connection.close()
 
-def get_submitted_tasks(request: Request):
+def get_submitted_tasks(task_id: str, request: Request):
     user = services.get_current_user(request)
     if not user:
         raise Exception("User not authenticated")
@@ -69,8 +69,11 @@ def get_submitted_tasks(request: Request):
             cursor.execute(
                         """
                         SELECT task_id, submitted_by, commit_sha, pull_request_url, change_summary
-                        FROM fix_submissions
+                        FROM fix_submissions where task_id = :task_id 
                         """
+                        {
+                            "task_id": task_id
+                        }
                     )
         else:
             cursor.execute(
