@@ -38,6 +38,8 @@ def submit_task(request : Request, data: SubmitTaskRequest):
             }
         )
 
+        # update dependencies in db and run vulnerability scan, if detected status = reject, if not detected, status = in review
+
         cursor.execute(
             """
             UPDATE fix_tasks
@@ -70,7 +72,7 @@ def get_submitted_tasks(task_id: str, request: Request):
                         """
                         SELECT task_id, submitted_by, commit_sha, pull_request_url, change_summary
                         FROM fix_submissions where task_id = :task_id 
-                        """
+                        """,
                         {
                             "task_id": task_id
                         }

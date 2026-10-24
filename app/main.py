@@ -7,13 +7,18 @@ from . import database
 from pydantic import BaseModel
 from .models import AssignTaskRequest, CreateTaskRequest, SubmitTaskRequest, LoginRequest, SignupRequest, CreateTeamRequest
 from .models import CreateUserRequest, ChangePasswordRequest, GetRemediationPlanRequest
-from . import agent, services
+from . import agent, services, auth, vulnerability
 from starlette.middleware.sessions import SessionMiddleware
 from pwdlib import PasswordHash
 import json
 import oracledb
 
 app = FastAPI()
+
+app.include_router(auth.router)
+app.include_router(vulnerability.router)
+
+password_hash = PasswordHash.recommended()
 
 @app.post("/submit_task")
 def submit_task(data: SubmitTaskRequest, request: Request):
@@ -26,17 +31,15 @@ def get_submitted_tasks(task_id: str, request: Request):
 @app.post("/remediation-plan")
 def get_remediation_plan( data: GetRemediationPlanRequest, request: Request):
     user = services.get_current_user(request)
-    vulnerability_summary = agent.vulnerability_summary(data.task_id, request)
+    vulnerability_summary = agent.generate_vulnerabilty_summary(data.task_id, request)
     impact_analysis = agent.analyse_vulnerabilty_impacts(data.task_id, request)
-    remediation_plan = agent.remediation_plan(data.task_id, request)
+    remediation_plan = agent.generate_remediation_plan(data.task_id, request)
     return {
         "message": "Remediation plan generated successfully",
         "vulnerability_summary": vulnerability_summary,
         "impact_analysis": impact_analysis,
         "remediation_plan": remediation_plan
     }
-
-
 
 @app.post("/admin/users", status_code=201)
 def create_user(
@@ -123,16 +126,6 @@ def create_user(
         cursor.close()
         connection.close()
 
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=os.environ["SESSION_SECRET"],
-    session_cookie="depgraph_session",
-    max_age=60 * 60 * 8,  # 8 hours
-    same_site="lax",
-    https_only=False,  # Local HTTP development only
-)
-
-password_hash = PasswordHash.recommended()
 
 @app.get("/")
 def home():
@@ -183,9 +176,6 @@ def add_team(data: CreateTeamRequest, request: Request):
     finally:
         cursor.close()
         connection.close()
-
-
-
 
 @app.post("/add_task", status_code=201)
 def add_task(data: CreateTaskRequest, request: Request):
@@ -779,180 +769,6 @@ def view_task_by_id(task_id: int, request: Request):
         cursor.close()
         connection.close()
 
-    
-
-#user_id in session, so I can verify authorisation
-
-#@app.get("/login")
-
-@app.post("/submit_task/{task_id}")
-def submit_task(task_id: int, data: SubmitTaskRequest):
-    connection = database.get_connection()
-    cursor = connection.cursor()
-
-    try:
-        cursor.execute(
-            """
-            SELECT status
-            FROM fix_tasks
-            WHERE task_id = :task_id
-            FOR UPDATE
-            """,
-            {"task_id": task_id}
-        )
-
-        task = cursor.fetchone()
-
-        if task is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Task not found"
-            )
-
-        old_status = task[0]
-        new_status = "IN_REVIEW"
-
-        validate_transition(old_status, new_status)
-
-        cursor.execute(
-            """
-            INSERT INTO fix_submissions (
-                task_id, submitted_by, commit_sha,
-                pull_request_url, change_summary, submitted_at
-            )
-            VALUES (
-                :task_id, :submitted_by, :commit_sha,
-                :pull_request_url, :change_summary, SYSTIMESTAMP
-            )
-            """,
-            {
-                "task_id": task_id,
-                "submitted_by": data.submitted_by,
-                "commit_sha": data.commit_sha,
-                "pull_request_url": data.pull_request_url,
-                "change_summary": data.change_summary
-            }
-        )
-
-        cursor.execute(
-            """
-            UPDATE fix_tasks
-            SET status = 'IN_REVIEW',
-                updated_at = SYSTIMESTAMP
-            WHERE task_id = :task_id
-            """,
-            {"task_id": task_id}
-        )
-
-        cursor.execute(
-            """
-            INSERT INTO history_log (
-                task_id, actor_user_id, action,
-                old_values, new_values, created_at
-            )
-            VALUES (
-                :task_id, NULL, 'SUBMITTED_FOR_REVIEW',
-                :old_values, :new_values, SYSTIMESTAMP
-            )
-            """,
-            {
-                "task_id": task_id,
-                "old_values": f"status={old_status}",
-                "new_values": "status=IN_REVIEW"
-            }
-        )
-
-        connection.commit()
-
-        return {"message": "Task submitted for review"}
-
-    except Exception:
-        connection.rollback()
-        raise
-
-    finally:
-        cursor.close()
-        connection.close()
-
-
-@app.post("/login")
-def login(data: LoginRequest, request: Request):
-    connection = database.get_connection()
-    cursor = connection.cursor()
-
-    try:
-        cursor.execute(
-            """
-            SELECT password, role, is_active
-            FROM users
-            WHERE userid = :userid
-            """,
-            {"userid": data.userid}
-        )
-
-        user = cursor.fetchone()
-
-        if (
-            user is None
-            or user[2] != "Y"
-            or not password_hash.verify(data.password, user[0])
-        ):
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid user ID or password"
-            )
-
-        # Start a fresh session after successful authentication.
-        request.session.clear()
-        request.session["userid"] = data.userid
-
-        return {
-            "message": "Login successful",
-            "role": user[1]
-        }
-
-    finally:
-        cursor.close()
-        connection.close()
-
-@app.post("/logout")
-def logout(request: Request):
-    request.session.clear()
-    return {"message": "Logged out successfully"}
-    
-
-@app.post("/signup")
-def signup(data: SignupRequest):
-    connection = database.get_connection()
-    cursor = connection.cursor()
-
-    try:
-        hashed_password = password_hash.hash(data.password)
-
-        cursor.execute(
-            """
-            INSERT INTO users (userid, email, password)
-            VALUES (:username, :email, :password)
-            """,
-            {
-                "username": data.username,
-                "email": data.email,
-                "password": hashed_password
-            }
-        )
-
-        connection.commit()
-
-        return {"message": "User created successfully"}
-
-    except Exception:
-        connection.rollback()
-        raise
-
-    finally:
-        cursor.close()
-        connection.close()
-
 
 ALLOWED_TRANSITIONS = {
     "OPEN": {"IN_PROGRESS", "CANCELLED"},
@@ -975,3 +791,6 @@ def validate_transition(current_status: str, new_status: str):
                 f"{current_status} -> {new_status}"
             )
         )
+
+
+    

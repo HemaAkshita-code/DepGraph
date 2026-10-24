@@ -43,3 +43,8 @@ class AssignTaskRequest(BaseModel):
 
 class GetRemediationPlanRequest(BaseModel):
     task_id: int
+
+class SetReviewStatus(BaseModel):
+    task_id: int
+    status: Literal["CHANGES_REQUESTED", "RESOLVED", "CANCELLED"]
+    changes_requested: str
