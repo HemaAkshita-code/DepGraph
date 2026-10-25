@@ -1,8 +1,10 @@
 
 from fastapi import Request
 
-from app import database, services
-from app.models import SubmitTaskRequest
+from . import database, services
+from .models import SubmitTaskRequest
+from .vulnerability_scan import execute_scan
+
 
 
 def submit_task(request : Request, data: SubmitTaskRequest):
@@ -39,18 +41,32 @@ def submit_task(request : Request, data: SubmitTaskRequest):
         )
 
         # update dependencies in db and run vulnerability scan, if detected status = reject, if not detected, status = in review
+        vuln_count = execute_scan()
 
-        cursor.execute(
-            """
-            UPDATE fix_tasks
-            SET status = 'IN REVIEW'
-            WHERE task_id = :task_id
-            """,
-            {"task_id": data.task_id}
-        )
+        if(vuln_count == 0):
+            cursor.execute(
+                """
+                UPDATE fix_tasks
+                SET status = 'IN REVIEW'
+                WHERE task_id = :task_id
+                """,
+                {"task_id": data.task_id}
+            )
+            return {"message": "Task submitted successfully"}
+        else:
+            cursor.execute(
+                            """
+                            UPDATE fix_tasks
+                            SET status = 'REJECTED'
+                            WHERE task_id = :task_id
+                            """,
+                            {"task_id": data.task_id}
+                        )
 
         connection.commit()
-        return {"message": "Task submitted successfully"}
+
+        return {"message" : str(vuln_count) + " - vulnerabilities still exist in your code"}
+        
     except Exception as e:
         connection.rollback()
         raise e

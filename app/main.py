@@ -7,7 +7,7 @@ from . import database
 from pydantic import BaseModel
 from .models import AssignTaskRequest, CreateTaskRequest, SubmitTaskRequest, LoginRequest, SignupRequest, CreateTeamRequest
 from .models import CreateUserRequest, ChangePasswordRequest, GetRemediationPlanRequest
-from . import agent, services, auth, vulnerability
+from . import agent, services, auth, vulnerability, users
 from starlette.middleware.sessions import SessionMiddleware
 from pwdlib import PasswordHash
 import json
@@ -17,6 +17,13 @@ app = FastAPI()
 
 app.include_router(auth.router)
 app.include_router(vulnerability.router)
+app.include_router(users.router)
+
+
+app.add_middleware(
+    SessionMiddleware, 
+    secret_key=os.getenv("SESSION_SECRET")
+)
 
 password_hash = PasswordHash.recommended()
 
@@ -34,6 +41,11 @@ def get_remediation_plan( data: GetRemediationPlanRequest, request: Request):
     vulnerability_summary = agent.generate_vulnerabilty_summary(data.task_id, request)
     impact_analysis = agent.analyse_vulnerabilty_impacts(data.task_id, request)
     remediation_plan = agent.generate_remediation_plan(data.task_id, request)
+
+    print("Vulnerability Summary:", repr(vulnerability_summary))
+    print("Impact Analysis:", impact_analysis)
+    print("Plan:", remediation_plan)
+
     return {
         "message": "Remediation plan generated successfully",
         "vulnerability_summary": vulnerability_summary,
@@ -424,13 +436,13 @@ def view_team_members(team_id: int, request: Request):
             SELECT
                 tm.team_id,
                 tm.user_id,
-                u.username,
-                tm.membership_role,
-                tm.joined_at
+                u.full_name,
+                tm.team_role,
+                tm.joined_on
             FROM team_members tm
             JOIN users u ON tm.user_id = u.user_id
             WHERE tm.team_id = :team_id
-            ORDER BY tm.joined_at
+            ORDER BY tm.joined_on
             """,
             {"team_id": team_id}
         )

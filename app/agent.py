@@ -16,7 +16,7 @@ client = OpenAI(
 
 def generate_vulnerabilty_summary(task_id, request: Request):
 
-    vulnerability_details = get_vunerability_dependency_details(task_id)
+    vulnerability_details = get_vunerability_dependency_details(task_id, request)
     context_prompt = vulnerability_details
 
     response = client.responses.parse(
@@ -32,13 +32,13 @@ def generate_vulnerabilty_summary(task_id, request: Request):
             }
         ]
     )
-
+    print(response.output_parsed)
     return response.output_parsed
 
 def generate_remediation_plan(task_id, request: Request):
 
-    vulnerability_details = get_vunerability_dependency_details(task_id)
-    project_repo_link_and_project_sha = get_project_repo_link_and_sha(task_id)
+    vulnerability_details = get_vunerability_dependency_details(task_id, request)
+    project_repo_link_and_project_sha = get_project_repo_link_and_sha(task_id, request)
 
     context_prompt = "".join([vulnerability_details, project_repo_link_and_project_sha])
 
@@ -55,13 +55,13 @@ def generate_remediation_plan(task_id, request: Request):
             }
         ]
     )
-
+    print(response.output_parsed)
     return response.output_parsed
 
 def analyse_vulnerabilty_impacts(task_id, request :Request):
 
-     vulnerability_details = get_vunerability_dependency_details(task_id)
-     project_repo_link_and_project_sha = get_project_repo_link_and_sha(task_id)
+     vulnerability_details = get_vunerability_dependency_details(task_id, request)
+     project_repo_link_and_project_sha = get_project_repo_link_and_sha(task_id, request)
 
      context_prompt = "".join([vulnerability_details, project_repo_link_and_project_sha])
     
@@ -79,6 +79,9 @@ def analyse_vulnerabilty_impacts(task_id, request :Request):
             }
         ]
     )
-
+     print("Parsed output:", repr(response.output_parsed))
+     print("Output text:", repr(response.output_text))
+     print("Response status:", response.status)
+     print(context_prompt)
      return response.output_parsed
 

@@ -33,7 +33,8 @@ def review_submission(data: SetReviewStatus ,request : Request):
     cursor = connection.cursor()
     try:
         if(data.status == 'CHANGES_REQUESTED'):
-            cursor.execute("insert into ")
+            cursor.execute("insert into ") # insert feedback
+            # else, just insert status
     except Exception as e:
         raise e
     
