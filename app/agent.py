@@ -1,5 +1,5 @@
 import os
-from urllib import response
+import json
 from .services import get_current_user
 from dotenv import load_dotenv
 from fastapi import Request
@@ -15,36 +15,39 @@ client = OpenAI(
 )
 
 def generate_vulnerabilty_summary(task_id, request: Request):
-
     vulnerability_details = get_vunerability_dependency_details(task_id, request)
-    context_prompt = vulnerability_details
+    # Include the word "json" in the prompt text to satisfy Groq's requirement
+    context_prompt = json.dumps(vulnerability_details, indent=2) + "\n\nProvide the response as a JSON object."
 
-    response = client.responses.parse(
+    response = client.chat.completions.create(
         model="openai/gpt-oss-20b",
-        input=[
+        messages=[
             {
                 "role": "system",
                 "content": vulnerability_summary
             },
             {
                 "role": "user",
-                "content": context_prompt 
+                "content": context_prompt
             }
-        ]
+        ],
+        response_format={"type": "json_object"}
     )
-    print(response.output_parsed)
-    return response.output_parsed
+
+    return response.choices[0].message.content
 
 def generate_remediation_plan(task_id, request: Request):
-
     vulnerability_details = get_vunerability_dependency_details(task_id, request)
-    project_repo_link_and_project_sha = get_project_repo_link_and_sha(task_id, request)
+    project_repo_info = get_project_repo_link_and_sha(task_id, request)
 
-    context_prompt = "".join([vulnerability_details, project_repo_link_and_project_sha])
+    context_prompt = json.dumps({
+        "vulnerability_details": vulnerability_details,
+        "project_repo_info": project_repo_info
+    }, indent=2) + "\n\nProvide the remediation plan as a JSON object."
 
-    response = client.responses.parse(
+    response = client.chat.completions.create(
         model="openai/gpt-oss-20b",
-        input=[
+        messages=[
             {
                 "role": "system",
                 "content": remediation_plan
@@ -53,22 +56,24 @@ def generate_remediation_plan(task_id, request: Request):
                 "role": "user",
                 "content": context_prompt
             }
-        ]
+        ],
+        response_format={"type": "json_object"}
     )
-    print(response.output_parsed)
-    return response.output_parsed
 
-def analyse_vulnerabilty_impacts(task_id, request :Request):
+    return response.choices[0].message.content
 
-     vulnerability_details = get_vunerability_dependency_details(task_id, request)
-     project_repo_link_and_project_sha = get_project_repo_link_and_sha(task_id, request)
+def analyse_vulnerabilty_impacts(task_id, request: Request):
+    vulnerability_details = get_vunerability_dependency_details(task_id, request)
+    project_repo_info = get_project_repo_link_and_sha(task_id, request)
 
-     context_prompt = "".join([vulnerability_details, project_repo_link_and_project_sha])
-    
+    context_prompt = json.dumps({
+        "vulnerability_details": vulnerability_details,
+        "project_repo_info": project_repo_info
+    }, indent=2) + "\n\nProvide the impact analysis as a JSON object."
 
-     response = client.responses.parse(
+    response = client.chat.completions.create(
         model="openai/gpt-oss-20b",
-        input=[
+        messages=[
             {
                 "role": "system",
                 "content": impact_analysis
@@ -77,11 +82,8 @@ def analyse_vulnerabilty_impacts(task_id, request :Request):
                 "role": "user",
                 "content": context_prompt
             }
-        ]
+        ],
+        response_format={"type": "json_object"}
     )
-     print("Parsed output:", repr(response.output_parsed))
-     print("Output text:", repr(response.output_text))
-     print("Response status:", response.status)
-     print(context_prompt)
-     return response.output_parsed
 
+    return response.choices[0].message.content
