@@ -2,7 +2,7 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Literal
 
 class SubmitTaskRequest(BaseModel):
-    submitted_by: int
+    task_id : int
     commit_sha: str
     pull_request_url: str
     change_summary: str
@@ -40,11 +40,14 @@ class ChangePasswordRequest(BaseModel):
 class AssignTaskRequest(BaseModel):
     task_id: int
     team_id: int
+    reviewer_user_id: int
+    priority: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+    priority_reason: str
 
 class GetRemediationPlanRequest(BaseModel):
     task_id: int
 
 class SetReviewStatus(BaseModel):
-    task_id: int
+    submission_id : int
     status: Literal["CHANGES_REQUESTED", "RESOLVED", "CANCELLED"]
     changes_requested: str

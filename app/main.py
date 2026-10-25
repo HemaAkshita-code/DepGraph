@@ -5,9 +5,9 @@ import os
 from fastapi import FastAPI, HTTPException, Request
 from . import database
 from pydantic import BaseModel
-from .models import AssignTaskRequest, CreateTaskRequest, SubmitTaskRequest, LoginRequest, SignupRequest, CreateTeamRequest
-from .models import CreateUserRequest, ChangePasswordRequest, GetRemediationPlanRequest
-from . import agent, services, auth, vulnerability, users
+from .models import AssignTaskRequest, CreateTaskRequest, SubmitTaskRequest, CreateTeamRequest
+from .models import CreateUserRequest, ChangePasswordRequest, GetRemediationPlanRequest, SetReviewStatus
+from . import agent, services, auth, vulnerability, users, submit_tasks, review_tasks
 from starlette.middleware.sessions import SessionMiddleware
 from pwdlib import PasswordHash
 import json
@@ -29,11 +29,11 @@ password_hash = PasswordHash.recommended()
 
 @app.post("/submit_task")
 def submit_task(data: SubmitTaskRequest, request: Request):
-    return services.submit_task(data, request)
+    return submit_tasks.submit_task(data, request)
 
 @app.get("/submitted_tasks/{task_id}")
 def get_submitted_tasks(task_id: str, request: Request):
-    return services.get_submitted_tasks(task_id, request)
+    return submit_tasks.get_submitted_tasks(task_id, request)
 
 @app.post("/remediation-plan")
 def get_remediation_plan( data: GetRemediationPlanRequest, request: Request):
@@ -52,6 +52,14 @@ def get_remediation_plan( data: GetRemediationPlanRequest, request: Request):
         "impact_analysis": impact_analysis,
         "remediation_plan": remediation_plan
     }
+
+@app.post("/review_tasks")
+def review_task(request: Request, data: SetReviewStatus):
+    return review_tasks.review_submission(request, data)
+
+@app.get("/view_review_tasks")
+def view_review_task(request:Request):
+    return review_tasks.view_review_tasks(request)
 
 @app.post("/admin/users", status_code=201)
 def create_user(
@@ -310,9 +318,9 @@ def assign_task(data: AssignTaskRequest, request: Request):
     try:
         cursor = connection.cursor()
 
-        # 1. Find the task and lock its row while we update it.
+        # 1. Find the task, lock its row, and fetch current values for audit logging
         cursor.execute("""
-            SELECT status, team_id
+            SELECT status, team_id, reviewer_user_id, policy_id, priority_reason
             FROM fix_tasks
             WHERE task_id = :task_id
             FOR UPDATE
@@ -326,12 +334,12 @@ def assign_task(data: AssignTaskRequest, request: Request):
                 detail="Task not found"
             )
 
-        old_status, old_team_id = task
+        old_status, old_team_id, old_reviewer_id, old_policy_id, old_priority_reason = task
 
-        # 2. Check whether this status change is allowed.
+        # 2. Check whether this status change is allowed
         validate_transition(old_status, "IN_PROGRESS")
 
-        # 3. Verify that the target team exists.
+        # 3. Verify that the target team exists
         cursor.execute("""
             SELECT 1
             FROM teams
@@ -344,19 +352,43 @@ def assign_task(data: AssignTaskRequest, request: Request):
                 detail="Team not found"
             )
 
-        # 4. Assign the task to the team and start the work.
+        # 4. Fetch policy_id and deadline_hours based on priority from remediation_policies
+        cursor.execute("""
+            SELECT policy_id, deadline_hours
+            FROM remediation_policies
+            WHERE priority = :priority AND is_active = 'Y'
+        """, {"priority": data.priority})
+
+        policy = cursor.fetchone()
+        if policy is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No active remediation policy found for priority '{data.priority}'"
+            )
+
+        policy_id, deadline_hours = policy
+
+        # 5. Assign the task, set policy, reviewer, reason, and calculate due_at deadline
         cursor.execute("""
             UPDATE fix_tasks
             SET team_id = :team_id,
+                reviewer_user_id = :reviewer_user_id,
+                policy_id = :policy_id,
+                priority_reason = :priority_reason,
+                due_at = SYSTIMESTAMP + NUMTODSINTERVAL(:deadline_hours, 'HOUR'),
                 status = 'IN_PROGRESS',
                 updated_at = SYSTIMESTAMP
             WHERE task_id = :task_id
         """, {
             "team_id": data.team_id,
+            "reviewer_user_id": data.reviewer_user_id,
+            "policy_id": policy_id,
+            "priority_reason": data.priority_reason,
+            "deadline_hours": deadline_hours,
             "task_id": data.task_id
         })
 
-        # 5. Record the change in the audit history.
+        # 6. Record the change in the audit history
         cursor.execute("""
             INSERT INTO history_log (
                 task_id, actor_user_id, action,
@@ -371,21 +403,29 @@ def assign_task(data: AssignTaskRequest, request: Request):
             "actor_user_id": admin["userid"],
             "old_values": json.dumps({
                 "team_id": old_team_id,
+                "reviewer_user_id": old_reviewer_id,
+                "policy_id": old_policy_id,
+                "priority_reason": old_priority_reason,
                 "status": old_status
             }),
             "new_values": json.dumps({
                 "team_id": data.team_id,
+                "reviewer_user_id": data.reviewer_user_id,
+                "policy_id": policy_id,
+                "priority_reason": data.priority_reason,
                 "status": "IN_PROGRESS"
             })
         })
 
-        # 6. Save the task update and audit record together.
+        # 7. Save the transaction
         connection.commit()
 
         return {
             "message": "Task assigned successfully",
             "task_id": data.task_id,
             "team_id": data.team_id,
+            "reviewer_user_id": data.reviewer_user_id,
+            "policy_id": policy_id,
             "status": "IN_PROGRESS"
         }
 
@@ -396,10 +436,9 @@ def assign_task(data: AssignTaskRequest, request: Request):
     finally:
         if cursor is not None:
             cursor.close()
-
         connection.close()
 
-
+        
 @app.get("/view_teams")
 def view_teams(request: Request):
     admin = services.require_admin(request)
