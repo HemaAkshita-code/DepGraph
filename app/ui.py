@@ -1,16 +1,26 @@
 import streamlit as st
 import oracledb
 import pandas as pd
-import requests
+import requests, os
 from pwdlib import PasswordHash
 from openai import OpenAI
+
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
 
 st.set_page_config(page_title="DepGraph Enterprise", layout="wide")
 password_hash = PasswordHash.recommended()
 
 # --- DATABASE CONNECTION ---
 def get_db():
-    return oracledb.connect(user="system", password="password123", dsn="localhost:1521/FREEPDB1")
+    return oracledb.connect(
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=int(os.getenv("DB_PORT", "1521")),
+        service_name=os.getenv("DB_SERVICE"))
 
 # --- 1. LOGIN SCREEN ---
 if "logged_in" not in st.session_state:
@@ -287,7 +297,7 @@ else:
                             try:
                                 # --- DIRECT AI CALL USING GROQ ---
                                 client = OpenAI(
-                                    api_key="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", # <--- PASTE YOUR GROQ API KEY HERE
+                                    api_key=os.getenv("GROQ_API_KEY"),
                                     base_url="https://api.groq.com/openai/v1"
                                 )
                                 
