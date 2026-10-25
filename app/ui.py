@@ -64,7 +64,7 @@ else:
             if st.button("Run Full System Scan", type="primary"):
                 with st.spinner("Scanning dependencies..."):
                     try:
-                        from vulnerability_scan import execute_scan
+                        from app.vulnerability_scan import execute_scan
                         found = execute_scan()
                         st.success(f"Scan complete! Found {found} vulnerabilities.")
                     except Exception as e:
@@ -182,7 +182,7 @@ else:
             if st.button("Run Full System Scan", type="primary"):
                 with st.spinner("Scanning..."):
                     try:
-                        from vulnerability_scan import execute_scan
+                        from app.vulnerability_scan import execute_scan
                         found = execute_scan()
                         st.success(f"Scan complete! Found {found} vulnerabilities.")
                     except Exception as e:
@@ -363,7 +363,7 @@ else:
                             st.info("GitHub link updated. Running verification scan...")
                             
                             # 3. Re-run scan
-                            from vulnerability_scan import execute_scan
+                            from app.vulnerability_scan import execute_scan
                             execute_scan()
                             
                             # 4. Check if fixed for this project
